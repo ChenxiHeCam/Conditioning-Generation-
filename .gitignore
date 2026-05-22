@@ -1,0 +1,22 @@
+# Model checkpoints (too big for git)
+*.pt
+*.pth
+*.ckpt
+
+# Archives
+*.zip
+*.tar.gz
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
