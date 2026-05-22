@@ -50,7 +50,12 @@ results/                   Eval artefacts
 ├── vae_v4_final_eval.json     Per-dataset machine-readable eval
 ├── vae_v4_best_worst.png      Best/worst test reconstructions (slices)
 ├── vae_v4_pdfs.png            Per-group voxel-value PDF overlays
-└── ps_ratio_v4.png            P_recon(k) / P_true(k) across 6 (suite, z) groups
+├── ps_ratio_v4.png            P_recon(k) / P_true(k) across 6 (suite, z) groups
+├── A_IC_z12_real_units.png    varying_IC z=12 best/worst — slices+PDF+PS in real mK
+├── B_astro_corner.png         varying_astro parameter space, coloured by rel_MSE
+├── C_LDM_trajectory.png       LDM key metrics (rel_MSE, PS, kurt) vs epoch
+├── D_LDM_ps_curves.png        LDM ep179 PS ratio curves per (suite, z)
+└── E_LDM_best_worst.png       LDM ep179 best/worst astro test samples
 ```
 
 ## Quick start — using the trained VAE
