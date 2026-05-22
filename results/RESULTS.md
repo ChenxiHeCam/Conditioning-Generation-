@@ -73,7 +73,12 @@ Additional astro metrics (test, n=100):
    This is the main gap to paper-grade quality for the astro suite.
 3. **Kurtosis ≈ 65 % of true** (1.33 vs 2.05) — generated samples are slightly more
    Gaussian than real T21; ionisation-bubble edges are under-amplified.
-4. **IC suite (z=8-12) clearly worse**: rel_MSE ≥ 0.66, PS ratios 1.6-2.3 (over-estimate).
+4. **Per-sample LDM rel_MSE distribution on astro test** (`F_LDM_astro_corner.png`):
+   median 0.28, mean 0.29, max 2.14. The worst-performing samples cluster at
+   **high X-ray flux (log₁₀ f_X ≳ 0)** and **low circular velocity (V_c ≲ 15 km/s)** —
+   the strong-heating and small-galaxy regimes are the hardest for the LDM to
+   generate accurately.
+5. **IC suite (z=8-12) clearly worse**: rel_MSE ≥ 0.66, PS ratios 1.6-2.3 (over-estimate).
    The current training data structure (1 IC × 1999 params for astro vs 81 IC × 1 params
    for IC) means the joint (IC × params) cross-term was never observed by the model.
    Per the collaborator's direction, future training will drop varying_IC and focus on
@@ -109,3 +114,5 @@ training simulator settings.
 | `C_LDM_trajectory.png`     | LDM key metrics vs epoch (val + test, both suites) |
 | `D_LDM_ps_curves.png`      | LDM ep179 PS ratio curves per (suite, z) test set |
 | `E_LDM_best_worst.png`     | LDM ep179 astro test best/worst — slices + PDF + 1D PS |
+| `F_LDM_astro_corner.png`   | LDM ep179 per-sample rel_MSE across astro parameter space |
+| `F_LDM_astro_corner.json`  | Machine-readable per-sample (params, rel_MSE) |

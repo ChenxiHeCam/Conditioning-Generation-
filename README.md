@@ -55,7 +55,9 @@ results/                   Eval artefacts
 ├── B_astro_corner.png         varying_astro parameter space, coloured by rel_MSE
 ├── C_LDM_trajectory.png       LDM key metrics (rel_MSE, PS, kurt) vs epoch
 ├── D_LDM_ps_curves.png        LDM ep179 PS ratio curves per (suite, z)
-└── E_LDM_best_worst.png       LDM ep179 best/worst astro test samples
+├── E_LDM_best_worst.png       LDM ep179 best/worst astro test samples
+├── F_LDM_astro_corner.png     LDM ep179 astro parameter space, per-sample rel_MSE
+└── F_LDM_astro_corner.json    Per-sample (params, rel_MSE) machine-readable
 ```
 
 ## Quick start — using the trained VAE
