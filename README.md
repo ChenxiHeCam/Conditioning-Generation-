@@ -89,8 +89,3 @@ Detailed metrics in `docs/REPORT_v4.md` and `vae/README_v4.md`.
 Trained `*.pt` files are **not** committed (~150 MB each, exceeds GitHub's hard limit).
 The handover bundle `vae_v4_bundle.zip` (148 MB) is delivered separately.
 
-## Notes
-
-This project was developed in collaboration with Claude (Anthropic) for code, debugging,
-and analysis assistance. All architectural decisions and physics interpretations were
-made by the human collaborator.
