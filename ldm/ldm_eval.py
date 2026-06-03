@@ -11,7 +11,8 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-from models.vae import VAE3D
+import sys, os; sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "vae"))
+from vae import VAE3D
 from ldm_dataset import build_train_dataset
 from ldm_unet   import LDMUNet3D
 from train_ldm import edm_precond, denoise, heun_sample

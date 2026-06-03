@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 
 from dataset import T21Dataset
-from models.vae import VAE3D
+from vae import VAE3D
 
 CKPT = '/root/autodl-tmp/checkpoints/vae_v4/vae_v4_final.pt'
 OUTDIR = '/root/autodl-tmp/vae_v4_visual_eval'

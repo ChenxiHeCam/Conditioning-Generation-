@@ -11,7 +11,7 @@ import torch
 from torch.utils.data import DataLoader, ConcatDataset
 
 from dataset import T21Dataset
-from models.vae import VAE3D
+from vae import VAE3D
 from utils.power_spectrum import power_spectrum
 
 

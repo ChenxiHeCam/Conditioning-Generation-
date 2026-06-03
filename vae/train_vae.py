@@ -12,15 +12,21 @@ Usage:
     --data_root_astro /root/autodl-tmp/ASR21cm/varying_astro \
     --out_dir /root/autodl-tmp/checkpoints/vae
 """
-import os, argparse, time
+import os, argparse, time, functools
+print = functools.partial(print, flush=True)
+from datetime import datetime
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, ConcatDataset
 from torch.cuda.amp import GradScaler, autocast
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 
 from dataset import T21Dataset
-from models.vae import VAE3D
+from vae import VAE3D
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +61,7 @@ def get_args():
                    help='channel multipliers per downsample stage; '
                         'len(ch_mults) controls how many 2x downsamples')
     p.add_argument('--ema_decay',   type=float, default=0.999)
-    p.add_argument('--save_every',  type=int,   default=25)
+    p.add_argument('--save_every',  type=int,   default=4)
     p.add_argument('--resume',      default=None)
     p.add_argument('--num_workers',      type=int,   default=4)
     p.add_argument('--patches_per_cube', type=int,   default=1,
@@ -130,6 +136,113 @@ def ps_loss(recon, target, n_bins=30):
 
 
 # ---------------------------------------------------------------------------
+# Validation visualisation helpers
+# ---------------------------------------------------------------------------
+
+def _power_spectrum(cube, n_bins=50):
+    """Spherically-averaged dimensionless power spectrum for a (1,N,N,N) or (N,N,N) tensor."""
+    if cube.dim() == 4:
+        cube = cube.squeeze(0)
+    cube = cube.float()
+    N = cube.shape[0]
+    device = cube.device
+    xm = cube - cube.mean()
+    F3 = torch.fft.rfftn(xm, dim=(-3, -2, -1))
+    Pk = F3.abs().pow(2) / (N ** 3)
+    k1  = torch.fft.fftfreq(N, device=device)
+    k1r = torch.fft.rfftfreq(N, device=device)
+    KX, KY, KZ = torch.meshgrid(k1, k1, k1r, indexing='ij')
+    Kmag = (KX**2 + KY**2 + KZ**2).sqrt()
+    kmax = Kmag.max().item()
+    edges = torch.linspace(0, kmax + 1e-6, n_bins + 1, device=device)
+    k_centres = 0.5 * (edges[:-1] + edges[1:])
+    ps = torch.zeros(n_bins, device=device)
+    for i in range(n_bins):
+        mask = (Kmag >= edges[i]) & (Kmag < edges[i + 1])
+        if mask.any():
+            ps[i] = Pk[mask].mean()
+    dsq = k_centres.pow(3) / (2 * torch.pi ** 2) * ps
+    return k_centres.cpu(), dsq.cpu()
+
+
+def _plot_best_worst(best, worst, out_path, epoch, t21_mean=0.0, t21_std=1.0):
+    samples = [best, worst]
+    labels  = [f'Best   NRMSE={best["nrmse"]:.3f}', f'Worst  NRMSE={worst["nrmse"]:.3f}']
+
+    def denorm(t):
+        return t * t21_std + t21_mean
+
+    fig, axes = plt.subplots(4, 2, figsize=(10, 16))
+
+    for col, (s, label) in enumerate(zip(samples, labels)):
+        gt  = denorm(s['gt'][0, 0])   # (N, N, N)
+        rec = denorm(s['rec'][0, 0])
+        sl  = gt.shape[-1] // 2
+
+        vmin, vmax = float(gt.min()), float(gt.max())
+
+        axes[0, col].imshow(gt[:, :, sl].numpy(), vmin=vmin, vmax=vmax, origin='lower')
+        axes[0, col].set_title(label, fontsize=9)
+        axes[1, col].imshow(rec[:, :, sl].numpy(), vmin=vmin, vmax=vmax, origin='lower')
+
+        margin = (vmax - vmin) * 0.05
+        bins   = np.linspace(vmin - margin, vmax + margin, 80)
+        axes[2, col].hist(gt.numpy().ravel(),  bins=bins, alpha=0.5, label='GT',  density=True)
+        axes[2, col].hist(rec.numpy().ravel(), bins=bins, alpha=0.5, label='Rec', density=True)
+        axes[2, col].set_xlabel(r'$T_{21}$ [mK]')
+        axes[2, col].legend(fontsize=8)
+
+        k, dsq_gt  = _power_spectrum(s['gt'][0])
+        _, dsq_rec = _power_spectrum(s['rec'][0])
+        mask = dsq_gt > 0
+        axes[3, col].loglog(k[mask].numpy(), dsq_gt[mask].numpy(),  label='GT',  lw=2)
+        axes[3, col].loglog(k[mask].numpy(), dsq_rec[mask].numpy(), label='Rec', lw=2, ls='--')
+        axes[3, col].set_xlabel('k [1/pix]')
+        axes[3, col].legend(fontsize=8)
+
+    axes[0, 0].set_ylabel('GT')
+    axes[1, 0].set_ylabel('Reconstruction')
+    axes[2, 0].set_ylabel('PDF')
+    axes[3, 0].set_ylabel(r'$\Delta^2_{21}$')
+
+    fig.suptitle(f'Epoch {epoch}', fontsize=11)
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=100, bbox_inches='tight')
+    plt.close(fig)
+    print(f'  Saved {out_path}')
+
+
+def _plot_metrics(all_nrmse, all_bias, out_path, epoch):
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+
+    axes[0].hist(all_nrmse, bins=40, edgecolor='k', linewidth=0.4)
+    axes[0].axvline(np.median(all_nrmse), color='r', ls='--',
+                    label=f'median={np.median(all_nrmse):.4f}')
+    axes[0].axvline(np.mean(all_nrmse), color='orange', ls='--',
+                    label=f'mean={np.mean(all_nrmse):.4f}')
+    axes[0].set_xlabel('NRMSE')
+    axes[0].set_ylabel('Count')
+    axes[0].set_title(f'Per-sample NRMSE  (epoch {epoch})')
+    axes[0].legend(fontsize=8)
+
+    axes[1].hist(all_bias, bins=40, edgecolor='k', linewidth=0.4)
+    axes[1].axvline(0, color='k', ls=':')
+    axes[1].axvline(np.median(all_bias), color='r', ls='--',
+                    label=f'median={np.median(all_bias):.4f}')
+    axes[1].axvline(np.mean(all_bias), color='orange', ls='--',
+                    label=f'mean={np.mean(all_bias):.4f}')
+    axes[1].set_xlabel(r'Amplitude bias  $\sigma_\mathrm{rec}/\sigma_\mathrm{gt} - 1$')
+    axes[1].set_ylabel('Count')
+    axes[1].set_title(f'Per-sample amplitude bias  (epoch {epoch})')
+    axes[1].legend(fontsize=8)
+
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=100, bbox_inches='tight')
+    plt.close(fig)
+    print(f'  Saved {out_path}')
+
+
+# ---------------------------------------------------------------------------
 # EMA
 # ---------------------------------------------------------------------------
 
@@ -163,7 +276,13 @@ def main():
     args = get_args()
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     os.makedirs(args.out_dir, exist_ok=True)
+
+    print("=" * 60)
+    print("Args:")
+    for k, v in sorted(vars(args).items()):
+        print(f"  {k:25s}: {v}")
     print(f"Device: {device}  |  AMP: {device.type=='cuda'}")
+    print("=" * 60)
 
     # ---- Datasets ----
     def build_split(split):
@@ -196,7 +315,17 @@ def main():
     # ---- Model ----
     model = VAE3D(in_ch=1, latent_ch=args.latent_ch,
                   base_ch=args.base_ch, ch_mults=tuple(args.ch_mults)).to(device)
-    print(f"VAE params: {sum(p.numel() for p in model.parameters())/1e6:.2f}M")
+    n_params = sum(p.numel() for p in model.parameters())
+    print("=" * 60)
+    print(f"Model: VAE3D  |  base_ch={args.base_ch}  ch_mults={args.ch_mults}"
+          f"  latent_ch={args.latent_ch}")
+    print(f"Params: {n_params/1e6:.2f}M  ({n_params:,})")
+    print(f"Scheduler: CosineAnnealingLR  T_max={args.epochs}  lr={args.lr}")
+    print(f"Loss schedule:"
+          f"  KL weight={args.kl_weight} (anneal over {args.kl_anneal} ep)"
+          f"  PS weight={args.ps_weight} (start ep {args.ps_start})"
+          f"  Spec weight={args.spec_weight} (start ep {args.spec_start})")
+    print("=" * 60)
 
     opt       = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-5)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, args.epochs)
@@ -229,8 +358,9 @@ def main():
         model.train()
         t0 = time.time()
         tr = dict(loss=0, recon=0, kl=0, ps=0, spec=0)
+        t_it = time.time()
 
-        for batch in train_loader:
+        for it, batch in enumerate(train_loader):
             x = batch['patch'].to(device)
 
             with autocast(enabled=(device.type == 'cuda')):
@@ -255,6 +385,22 @@ def main():
             tr['ps']    += l_ps.item()
             tr['spec']  += l_spec.item()
 
+            if (it + 1) % 10 == 0:
+                ms_per_it = (time.time() - t_it) / 10 * 1000
+                t_it = time.time()
+                with torch.no_grad():
+                    lat_mu    = mean.float().mean().item()
+                    lat_sigma = mean.float().std().item()
+                print(f"  [{datetime.now().strftime('%H:%M:%S')}]"
+                      f"\tEp {epoch:4d}  it {it+1:4d}"
+                      f"\tloss {loss.item():.4f}"
+                      f"\tmse {l_recon.item():.4f}"
+                      f"\tkl {l_kl.item():.4f}"
+                      f"\tps {l_ps.item():.4f}"
+                      f"\tsp {l_spec.item():.4f}"
+                      f"\tμ {lat_mu:+.3f}  σ {lat_sigma:.3f}"
+                      f"\t{ms_per_it:.0f}ms/it")
+
         scheduler.step()
         n = len(train_loader)
         for k in tr: tr[k] /= n
@@ -262,6 +408,10 @@ def main():
         # ---- Validation ----
         model.eval()
         vl = dict(loss=0, recon=0, kl=0)
+        do_vis = (epoch + 1) % args.save_every == 0 or epoch == args.epochs - 1
+        best_sample = worst_sample = None
+        all_nrmse, all_bias = [], []
+
         with torch.no_grad():
             for batch in val_loader:
                 x = batch['patch'].to(device)
@@ -273,6 +423,25 @@ def main():
                 vl['loss']  += loss.item()
                 vl['recon'] += l_recon.item()
                 vl['kl']    += l_kl.item()
+
+                x_cpu   = x.float().cpu()
+                rec_cpu = recon.float().cpu()
+                gt_std  = x_cpu.view(x_cpu.shape[0], -1).std(dim=1).clamp(min=1e-6)
+                rec_std = rec_cpu.view(rec_cpu.shape[0], -1).std(dim=1)
+                nrmse   = ((rec_cpu - x_cpu)**2).mean(dim=[1,2,3,4]).sqrt() / gt_std
+                bias    = rec_std / gt_std - 1
+                all_nrmse.extend(nrmse.tolist())
+                all_bias.extend(bias.tolist())
+
+                if do_vis:
+                    for i in range(x_cpu.shape[0]):
+                        nv    = nrmse[i].item()
+                        entry = {'nrmse': nv, 'gt': x_cpu[i:i+1], 'rec': rec_cpu[i:i+1]}
+                        if best_sample is None or nv < best_sample['nrmse']:
+                            best_sample = entry
+                        if worst_sample is None or nv > worst_sample['nrmse']:
+                            worst_sample = entry
+
         nv = len(val_loader)
         for k in vl: vl[k] /= nv
 
@@ -289,7 +458,19 @@ def main():
                     f"{vl['loss']:.6f},{vl['recon']:.6f},{vl['kl']:.6f},"
                     f"{kl_w:.4e},{ps_w:.4e},{spec_w:.4e}\n")
 
-        if (epoch + 1) % args.save_every == 0 or epoch == args.epochs - 1:
+        nrmse_arr = np.array(all_nrmse)
+        bias_arr  = np.array(all_bias)
+        print(f"  val NRMSE  mean={nrmse_arr.mean():.4f}  median={np.median(nrmse_arr):.4f}"
+              f"  |  bias  mean={bias_arr.mean():.4f}  median={np.median(bias_arr):.4f}")
+
+        if do_vis:
+            if best_sample is not None:
+                vis_path = os.path.join(args.out_dir, f'val_best_worst_ep{epoch:04d}.png')
+                ds = val_ds.datasets[0] if hasattr(val_ds, 'datasets') else val_ds
+                _plot_best_worst(best_sample, worst_sample, vis_path, epoch,
+                                 t21_mean=ds.t21_mean, t21_std=ds.t21_std)
+            metrics_path = os.path.join(args.out_dir, f'val_metrics_ep{epoch:04d}.png')
+            _plot_metrics(all_nrmse, all_bias, metrics_path, epoch)
             path = os.path.join(args.out_dir, f'vae_epoch{epoch:04d}.pt')
             torch.save({
                 'epoch':     epoch,

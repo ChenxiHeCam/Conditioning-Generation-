@@ -20,3 +20,10 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
+
+# Slurm output files
+*.out
+*.err
+
+# Models
+checkpoints/

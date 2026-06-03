@@ -26,7 +26,7 @@ from torch.utils.data import DataLoader, ConcatDataset
 from torch.cuda.amp import GradScaler, autocast
 
 from dataset import T21Dataset
-from models.vae import VAE3D
+from vae import VAE3D
 
 
 def get_args():
