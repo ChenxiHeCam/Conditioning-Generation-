@@ -1,192 +1,159 @@
-# Conditioning-Generation: 21cm Brightness-Temperature Emulator
+# 21cm latent diffusion (v5, 8× compression)
 
-3D latent-diffusion emulator for the 21cm brightness-temperature field, conditioned on
-cosmological initial conditions (IC) and astrophysical parameters.
+Conditional 3D generative model for the 21cm brightness-temperature field at
+high z. Conditions on the initial-condition field (density + relative
+velocity), four astrophysical parameters and redshift. Output is a `1×64³`
+patch in mK.
 
-The pipeline has two stages:
+The earlier 1× pipeline (VAE v4 + LDM v1) is kept in `legacy/` for reference;
+this folder is the current code.
 
-1. **Stage 1 — VAE3D** encodes 64³ T21 patches into an (8, 32, 32, 32) latent.
-   Trained on the `varying_astro` + `varying_IC` simulation suites (1028 training cubes).
-2. **Stage 2 — Latent Diffusion Model (LDM)** is a 3D U-Net denoiser operating on the
-   normalised latent, conditioned on IC density + velocity, four astrophysical parameters
-   (`MyStar_II`, `MyVc`, `MyFX`, `DelayParam`), redshift, and EDM noise level σ.
+## Pipeline
 
----
-
-## Headline results
-
-| Stage | Group | n | Metric | Value |
-|-------|-------|---|--------|-------|
-| **VAE v4** | astro test z=10 | 100 | rel_MSE | **9.2e-5** |
-|            | astro test z=10 | 100 | PS (large / mid / small) | **0.993 / 0.995 / 0.992** |
-|            | IC test z=8–12  | 5–8 per z | rel_MSE | 1.2e-4 to 1.4e-3 |
-|            | IC test z=8–12  | 5–8 per z | PS (all bands) | 0.965 to 0.995 |
-| **LDM v1** (ep179) | astro test z=10 | 100 | rel_MSE | **0.054** |
-|                    | astro test z=10 | 100 | PS (large / mid / small) | 0.83 / 0.83 / 0.80 |
-|                    | astro test z=10 | 100 | pixel correlation | 0.91 |
-|                    | astro test z=10 | 100 | kurt (recon / true) | 1.33 / 2.05 |
-
-- VAE Stage 1 is **paper-grade** across all redshifts and suites (PS in [0.965, 1.00]).
-- LDM Stage 2 is **strong on astro z=10 but underestimates PS by ~17 %**. IC suite is
-  weaker because the training data has no joint (IC × params) variation.
-- Per-sample LDM error is worst at high X-ray flux and low circular velocity (the
-  hardest physical regimes); see `results/F_LDM_astro_corner.png`.
-
-Full per-(suite, redshift, split) numbers and figure index live in
-[`results/RESULTS.md`](results/RESULTS.md).
-
----
-
-## Repository layout
+LDM diffuses an `(8, 16, 16, 16)` latent. The frozen VAE decodes it to a
+`1×64³` field. A small conditional residual U-Net adds a per-voxel correction
+that uses the IC field and the astrophysical conditioning. The whole thing
+runs in a single forward of each model.
 
 ```
-vae/                       Stage 1 — VAE
-├── vae.py                 VAE3D model definition (parametric ch_mults, latent_ch)
-├── dataset.py             T21Dataset loader (auto-detects varying_astro / varying_IC)
-├── train_vae.py           Training script with KL anneal + PS + spectral losses
-├── train_vae_v3_finetune.py   v3 finetune attempt (k-weighted PS + free-bits KL)
-├── train_residual.py      Residual high-k VAE (post-hoc small-scale fix)
-├── train_residual_lo.py   Residual low-k VAE (failed experiment, kept for reference)
-├── evaluate_residual.py   Evaluation for v3 + residual VAEs
-├── evaluate_moe.py        Three-stage MoE evaluation (v3 + res_hi + res_lo)
-├── finalize_v4.py         Compute latent stats and produce final ckpt
-├── vae_visual_eval.py     Best/worst test reconstructions + PDF histograms
-└── README_v4.md           VAE v4 model card (recipe + eval results)
-
-ldm/                       Stage 2 — Latent Diffusion Model
-├── ldm_unet.py            3D U-Net denoiser (FiLM, windowed + global attn, learned IC stem)
-├── ldm_dataset.py         Aligned (T21, IC, params, z) dataset with augmentation
-├── train_ldm.py           EDM training loop with CFG dropout, EMA, sigma_data calibration
-├── train_ldm_v2_finetune.py   v2 with moment-matching + latent spectral losses
-├── ldm_eval.py            Per-(suite, redshift) eval: PS, PDF KS, kurt, IC corr, etc.
-└── LDM_LOSS_UPGRADES.md   Documented loss upgrades for next training round
-
-eval/                      Standalone diagnostics
-├── eval_comprehensive.py  VAE + residual comparison across all splits/groups
-├── eval_full.py           Extended LDM eval (latent stats + outliers + full PS curves)
-├── plot_ps.py             PS ratio plot for v4
-└── test_aug_robustness.py Test whether v4 encoder is flip/rotation invariant
-
-docs/
-└── REPORT_v4.md           Full VAE v4 status report (per-redshift, per-split)
-
-results/                   Eval artefacts (figures + machine-readable numbers)
-├── RESULTS.md                  Test-set headline numbers + figure index (read this first)
-├── vae_v4_final_eval.json      Per-dataset machine-readable VAE eval
-├── vae_v4_best_worst.png       VAE best/worst test reconstructions (slices)
-├── vae_v4_pdfs.png             VAE per-group voxel-value PDF overlays
-├── ps_ratio_v4.png             VAE P(k) ratio across 6 (suite, z) groups
-├── A_IC_z12_real_units.png     VAE IC z=12 best/worst — slices + PDF + PS in real mK
-├── B_astro_corner.png          VAE astro parameter space, coloured by rel_MSE
-├── C_LDM_trajectory.png        LDM key metrics (rel_MSE, PS, kurt) vs epoch
-├── D_LDM_ps_curves.png         LDM ep179 PS ratio curves per (suite, z)
-├── E_LDM_best_worst.png        LDM ep179 best/worst astro test samples
-├── F_LDM_astro_corner.png      LDM ep179 astro parameter space, per-sample rel_MSE
-└── F_LDM_astro_corner.json     Per-sample (params, rel_MSE) machine-readable
+z ~ LDM(IC, params, redshift)
+x_low = VAE.decoder(z * latent_std + latent_mean)
+r_hat = cond_residual(x_low, IC, params, redshift)
+T21   = x_low + r_hat
 ```
 
----
+## Checkpoints
 
-## Quick start
+| File | What |
+|---|---|
+| `vae_v5_final.pt` | VAE encoder + decoder (42.6 M), with per-channel latent stats and `model_config` so the LDM can load it directly |
+| `ldm_epoch0249.pt` | LDM denoiser, 5.7 M parameters, 250 epochs |
+| `cond_residual_v2_ep0029.pt` | Residual U-Net, 6.1 M parameters, finetuned for 30 epochs from the stage-1 ckpt with mixed VAE + LDM training pairs |
 
-### Use the trained VAE
+## Numbers (test split, n=64 patches, z=10)
+
+| | rel MSE | PS large | PS mid | PS small |
+|---|---|---|---|---|
+| LDM alone | 0.21 | 1.32 | 1.15 | 0.46 |
+| LDM + cond residual | 0.012 | 0.72 | 1.04 | 1.07 |
+
+The PS large value of 0.72 includes the DC mode in the bin (the `power_spectrum`
+helper does not mean-subtract before FFT). With mean subtraction or restricting
+to `k > 0.05 cMpc⁻¹` the same number is ~0.95.
+
+## Files
+
+```
+dataset.py                  T21Dataset, including train/val/test/holdout splitting
+ldm_unet.py                 LDM 3D U-Net; ICStem and the U-Net take an extra
+                            downsample for the 16³ latent
+train_vae.py                VAE training
+train_ldm.py                LDM training
+finalize_vae.py             writes latent_mean / latent_std / model_config into a
+                            VAE checkpoint so train_ldm.py can load it
+sample_ldm_pairs.py         offline LDM sampling; produces (x_low, real_x, IC,
+                            params) tuples for the residual stage-2 training
+train_cond_residual.py      conditional residual model + stage-1 trainer (VAE
+                            encode-decode pairs only)
+train_cond_residual_v2.py   stage-2 trainer (mixed VAE + LDM pairs)
+evaluate_vae.py             VAE-only evaluation (PS bands + slices)
+ldm_eval.py                 LDM evaluation (sampling, PS, kurtosis, PDF KS,
+                            per-suite breakdown)
+```
+
+## Reproducing
+
+```bash
+# 1) VAE
+python train_vae.py \
+  --data_root_ic   /path/to/varying_IC \
+  --data_root_astro /path/to/varying_astro \
+  --redshifts 8 9 10 11 12 \
+  --max_per_z 50 --primary_z 10 --holdout_frac 0.25 \
+  --out_dir checkpoints/vae_v5 \
+  --ch_mults 1 2 --latent_ch 8 --base_ch 128 \
+  --batch_size 8 --lr 1e-4 --epochs 350 \
+  --kl_weight 3e-5 --kl_anneal 100 \
+  --ps_weight 0.3 --spec_weight 0.05 \
+  --ps_start 25 --spec_start 25 --ramp_epochs 25 \
+  --ps_k_alpha 2.0 --save_every 25 --patches_per_cube 4 --num_workers 4
+
+# 2) finalize
+python finalize_vae.py \
+  --ckpt_in  checkpoints/vae_v5/vae_epoch0149.pt \
+  --ckpt_out checkpoints/vae_v5/vae_v5_final.pt \
+  --latent_ch 8 --base_ch 128 --ch_mults 1 2 --latent_spatial 16
+
+# 3) LDM
+python train_ldm.py \
+  --vae_ckpt checkpoints/vae_v5/vae_v5_final.pt \
+  --out_dir  checkpoints/ldm_v5 \
+  --epochs 250 --batch_size 16 --lr 1e-4 \
+  --patches_per_cube 4 --save_every 10 --num_workers 4 \
+  --ps_check_every 9999
+
+# 4) offline LDM pairs (~10 min)
+python sample_ldm_pairs.py \
+  --ldm_ckpt checkpoints/ldm_v5/ldm_epoch0249.pt \
+  --vae_ckpt checkpoints/vae_v5/vae_v5_final.pt \
+  --out_path ldm_pairs_K2.pt \
+  --K 2 --num_steps 18 --val_frac 0.67 \
+  --redshifts 8 9 10 11 12 \
+  --max_per_z 50 --primary_z 10 --holdout_frac 0.25
+
+# 5) residual, two stages
+python train_cond_residual.py \
+  --vae_ckpt checkpoints/vae_v5/vae_v5_final.pt \
+  --out_dir  checkpoints/cond_residual \
+  --epochs 80 --lr 1e-4 \
+  --kl_weight 1e-5 --ps_weight 0.5 --high_k_alpha 3.0 \
+  --redshifts 8 9 10 11 12 \
+  --max_per_z 50 --primary_z 10 --holdout_frac 0.25
+
+python train_cond_residual_v2.py \
+  --vae_ckpt  checkpoints/vae_v5/vae_v5_final.pt \
+  --init_ckpt checkpoints/cond_residual/cond_residual_ep0079.pt \
+  --ldm_pairs_file ldm_pairs_K2.pt \
+  --out_dir  checkpoints/cond_residual_v2 \
+  --epochs 30 --lr 5e-5 --ldm_frac 0.4 \
+  --ps_weight 0.5 --high_k_alpha 3.0
+```
+
+## Inference
 
 ```python
 import torch
-from vae.vae import VAE3D
+from models.vae import VAE3D
+from ldm_unet import LDMUNet3D
+from train_ldm import heun_sample
+from train_cond_residual import CondResidualUNet
 
-ckpt = torch.load('vae_v4_final.pt', map_location='cuda')   # not in repo; see bundle
-cfg  = ckpt['model_config']
-model = VAE3D(in_ch=1, latent_ch=cfg['latent_ch'],
-              base_ch=cfg['base_ch'], ch_mults=tuple(cfg['ch_mults'])).cuda()
-model.load_state_dict(ckpt['model']); model.eval()
+device = 'cuda'
+vae_ck = torch.load('checkpoints/vae_v5_final.pt', map_location=device)
+cfg = vae_ck['model_config']
+vae = VAE3D(in_ch=1, latent_ch=cfg['latent_ch'],
+            base_ch=cfg['base_ch'], ch_mults=tuple(cfg['ch_mults'])).to(device).eval()
+vae.load_state_dict(vae_ck['model'])
+lm = vae_ck['latent_mean'].view(1,-1,1,1,1).to(device)
+ls = vae_ck['latent_std' ].view(1,-1,1,1,1).to(device)
 
-# Encode: (B, 1, 64, 64, 64) -> latent (B, 8, 32, 32, 32)
-with torch.no_grad():
-    mean, _ = model.encoder(x)
-    recon   = model.decoder(mean)
+ldm = LDMUNet3D(latent_ch=cfg['latent_ch'],
+                ch_mults=(1,2), attn_levels=(0,1),
+                ic_stem_downsamples=2).to(device).eval()
+ldm.load_state_dict(torch.load('checkpoints/ldm_epoch0249.pt', map_location=device)['model'])
+
+res = CondResidualUNet(base_ch=32).to(device).eval()
+res.load_state_dict(torch.load('checkpoints/cond_residual_v2_ep0029.pt',
+                               map_location=device)['model'])
+
+@torch.no_grad()
+def generate(ic_delta, ic_vbv, params, redshift):
+    B = ic_delta.shape[0]
+    z = heun_sample(ldm, B, tuple(cfg['latent_shape']),
+                    ic_delta, ic_vbv, params, redshift,
+                    sigma_data=1.121, num_steps=18,
+                    cfg_ic=1.0, cfg_params=1.0,
+                    null_param=None, device=device)
+    x_low = vae.decoder(z * ls + lm)
+    return x_low + res(x_low, ic_delta, ic_vbv, params, redshift)
 ```
-
-Per-channel latent normalisation (required for downstream LDM training) is stored in
-`ckpt['latent_mean']` and `ckpt['latent_std']`. See `vae/README_v4.md` §3 for usage.
-
-### Re-train VAE (Stage 1)
-
-```bash
-python vae/train_vae.py \
-  --data_root_ic /path/to/varying_IC \
-  --data_root_astro /path/to/varying_astro \
-  --redshifts 8 9 10 11 12 \
-  --epochs 350 --batch_size 8 \
-  --latent_ch 8 --base_ch 128 --ch_mults 1 \
-  --kl_weight 3e-5 --kl_anneal 100 \
-  --ps_weight 0.1 --ps_start 50 \
-  --spec_weight 0.05 --spec_start 80 \
-  --out_dir checkpoints/vae
-```
-
-### Re-train LDM (Stage 2)
-
-```bash
-python ldm/train_ldm.py \
-  --vae_ckpt vae_v4_final.pt \
-  --epochs 200 --batch_size 8 --lr 1e-4 \
-  --patches_per_cube 4 \
-  --save_every 10 --ps_check_every 10 \
-  --out_dir checkpoints/ldm_v1
-```
-
-### Evaluate
-
-```bash
-python ldm/ldm_eval.py \
-  --ldm_ckpt checkpoints/ldm_v1/ldm_epoch0179.pt \
-  --vae_ckpt vae_v4_final.pt \
-  --out ldm_eval.json \
-  --split test
-```
-
----
-
-## Training set summary
-
-| Suite | Train cubes | Redshifts | What varies | What's fixed |
-|-------|-------------|-----------|-------------|--------------|
-| `varying_astro` | 803 | z=10 only | 4 astro params (1003 unique vectors) | IC realisation (shared `delta1000.mat` / `vbv1000.mat`) |
-| `varying_IC`    | 225 | z=8, 9, 10, 11, 12 | 81 IC seeds | astro params (fixed at fstarII=0.05, Vc=4.2, fX=1.0, delay=0.75) |
-
-The two suites never sample the joint `(IC, astro_params)` plane — they cover only the
-two axes that cross at one point. This is the structural reason the LDM struggles to
-generalise to arbitrary `(IC, astro_params, z)` combinations and why the IC test set is
-much weaker than the astro test set.
-
----
-
-## Model checkpoints
-
-Trained `*.pt` files are **not** committed (each is ~150 MB, beyond GitHub's hard limit).
-The handover bundle `vae_v4_bundle.zip` (148 MB) is delivered separately and contains:
-
-- `vae_v4_final.pt` — VAE checkpoint with `model`, `ema`, `latent_mean`, `latent_std`,
-  `model_config`, full training args, epoch
-- `vae.py`, `dataset.py` — model + data loader
-- `vae_v4_final_eval.json` — machine-readable eval numbers
-- `README_v4.md`, `REPORT_v4.md`, `REPORT_v4.pdf` — model card + status report
-- `ps_ratio_v4.png` — PS ratio curves
-
-LDM checkpoints (ep119, ep139, ep159, ep179) are kept on the GPU host; let me know
-which epoch you want and they can be packaged the same way.
-
----
-
-## What's next
-
-1. **Drop varying_IC** for the next LDM training run. The two suites are not
-   simulation-compatible; only `varying_astro` is the target.
-2. **Generate joint (IC × params) simulations** so the LDM can learn the cross-term.
-   Suggested scale: ~3000 new sims with random `(IC seed, astro_params)` pairs at
-   z=6–30 (≈ 75 000 new cubes; ~10 hours on COSMA at 75-way parallelism).
-3. **Finetune from ep179** with the loss additions documented in
-   `ldm/LDM_LOSS_UPGRADES.md` (moment matching + latent spectral) once the new data
-   arrives. Expected to push astro PS into the paper-grade [0.95, 1.05] band and lift
-   kurt to within 10 % of the true value.
