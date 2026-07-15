@@ -277,7 +277,8 @@ def get_args():
     p.add_argument('--batch_size', type=int, default=8)
     p.add_argument('--lr',         type=float, default=1e-4)
     p.add_argument('--wd',         type=float, default=1e-4)
-    p.add_argument('--patches_per_cube', type=int, default=4)
+    p.add_argument('--patch_size', type=int, default=64); p.add_argument('--patches_per_cube', type=int, default=4)
+    p.add_argument('--redshifts', nargs='+', type=int, default=[8, 9, 10, 11, 12])
     p.add_argument('--P_mean',     type=float, default=-0.4)
     p.add_argument('--P_std',      type=float, default=1.2)
     p.add_argument('--drop_ic',    type=float, default=0.10)
@@ -315,8 +316,8 @@ def main():
     # ---------- Dataset ----------
     train_ds, weights = build_train_dataset(
         args.data_root_ic, args.data_root_astro,
-        redshifts=(8, 9, 10, 11, 12),
-        patches_per_cube=args.patches_per_cube,
+        redshifts=tuple(args.redshifts),
+        patch_size=args.patch_size, patches_per_cube=args.patches_per_cube,
         augment=True, split='train',
     )
     sampler = make_balanced_sampler(weights, num_samples=len(train_ds))
@@ -324,7 +325,7 @@ def main():
                               num_workers=args.num_workers, pin_memory=True)
     val_ds, val_weights = build_train_dataset(
         args.data_root_ic, args.data_root_astro,
-        patches_per_cube=1, augment=False, split='val',
+        patch_size=args.patch_size, patches_per_cube=1, augment=False, split='val',
     )
     # val_loader is SHUFFLED so each epoch's val_subset is a fresh random pick
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=True,
@@ -364,7 +365,9 @@ def main():
         rc = torch.load(args.resume, map_location=device)
         model.load_state_dict(rc['model'])
         opt.load_state_dict(rc['opt'])
-        if 'scheduler' in rc: scheduler.load_state_dict(rc['scheduler'])
+        # RESET: skip scheduler restore, re-init for remaining epochs
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(1, args.epochs - start_epoch))
+        for g in opt.param_groups: g['lr'] = args.lr
         for d in args.ema_decays:
             if f'ema_{d}' in rc:
                 emas[d].shadow = {k: v.to(device) for k, v in rc[f'ema_{d}'].items()}

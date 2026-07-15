@@ -110,7 +110,7 @@ def parse_params(path):
 
 class T21Dataset(Dataset):
     def __init__(self, data_root, patch_size=64, redshifts=None,
-                 split='train', val_frac=0.1, test_frac=0.1, seed=42,
+                 split='train', val_frac=0.1, test_frac=0.2, seed=42,
                  npix=256, ic_cache_size=60, patches_per_cube=1,
                  load_ic=True, max_per_z=None, primary_z=None, holdout_frac=0.0):
         """

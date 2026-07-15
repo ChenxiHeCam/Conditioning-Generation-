@@ -219,6 +219,8 @@ class ICStem(nn.Module):
             nxt = out_ch if i == downsamples - 1 else max(ch * 2, out_ch)
             layers += [nn.Conv3d(ch, nxt, 4, stride=2, padding=1), nn.SiLU()]
             ch = nxt
+        if ch != out_ch:
+            layers += [nn.Conv3d(ch, out_ch, 3, padding=1), nn.SiLU()]
         self.net = nn.Sequential(*layers)
         self.out_ch = out_ch
 
